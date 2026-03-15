@@ -1,0 +1,55 @@
+{
+  "name": "imcc",
+  "version": "0.2.0",
+  "description": "Bridge your local Claude Code CLI to IM apps (Lark, Telegram, etc.)",
+  "type": "module",
+  "bin": {
+    "imcc": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "start": "tsx src/cli.ts start",
+    "dev": "tsx --watch src/cli.ts start"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "lark",
+    "feishu",
+    "telegram",
+    "im",
+    "bridge",
+    "cli"
+  ],
+  "author": "nangongwentian-fe",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nangongwentian-fe/imcc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nangongwentian-fe/imcc/issues"
+  },
+  "homepage": "https://github.com/nangongwentian-fe/imcc#readme",
+  "dependencies": {
+    "@clack/prompts": "^1.1.0",
+    "@larksuiteoapi/node-sdk": "^1.41.0",
+    "commander": "^12.1.0",
+    "grammy": "^1.31.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}
