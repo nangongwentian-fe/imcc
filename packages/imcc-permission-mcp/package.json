@@ -1,0 +1,30 @@
+{
+  "name": "imcc-permission-mcp",
+  "version": "0.1.0",
+  "description": "Permission prompt MCP server for imcc",
+  "type": "module",
+  "bin": {
+    "imcc-permission-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "permission",
+    "imcc"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "zod": "^4.1.5"
+  }
+}
