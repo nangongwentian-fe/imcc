@@ -1,5 +1,5 @@
 import { Bot, Api } from 'grammy';
-import { getConfig } from '../config.js';
+import type { ProfileConfig } from '../config.js';
 import { registerChannel } from './registry.js';
 import type { Channel, OnInboundMessage } from '../types.js';
 
@@ -89,10 +89,9 @@ class TelegramChannel implements Channel {
   }
 }
 
-registerChannel('telegram', (onMessage: OnInboundMessage) => {
-  const cfg = getConfig().channels?.telegram;
-  if (!cfg?.botToken) return null;
+registerChannel('telegram', (profile: ProfileConfig, onMessage: OnInboundMessage) => {
+  if (profile.channel.type !== 'telegram') return null;
 
-  const allowed = new Set(cfg.allowedChatIds ?? []);
-  return new TelegramChannel(cfg.botToken, allowed, onMessage);
+  const allowed = new Set(profile.channel.allowedChatIds ?? []);
+  return new TelegramChannel(profile.channel.botToken, allowed, onMessage);
 });

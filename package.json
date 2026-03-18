@@ -1,8 +1,11 @@
 {
   "name": "imcc",
   "version": "0.2.0",
-  "description": "Bridge your local Claude Code CLI to IM apps (Lark, Telegram, etc.)",
+  "description": "Bridge your local Claude Code and Codex CLIs to IM apps",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "bin": {
     "imcc": "dist/cli.js"
   },
@@ -12,7 +15,9 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:root && npm run build:packages",
+    "build:root": "tsc -p tsconfig.json",
+    "build:packages": "npm run build -w imcc-permission-mcp",
     "prepare": "npm run build",
     "start": "tsx src/cli.ts start",
     "dev": "tsx --watch src/cli.ts start"
@@ -23,6 +28,7 @@
   "keywords": [
     "claude",
     "claude-code",
+    "codex",
     "lark",
     "feishu",
     "telegram",

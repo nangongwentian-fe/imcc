@@ -1,9 +1,15 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import * as lark from '@larksuiteoapi/node-sdk';
-import { getConfig, writeConfig } from './config.js';
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
+import {
+  listProfiles,
+  saveProfile,
+  type ApprovalPolicy,
+  type ChannelKind,
+  type ProfileConfig,
+  type ProviderKind,
+  type SandboxMode,
+} from './config.js';
 
 function isCancelled(value: unknown): boolean {
   return p.isCancel(value);
@@ -14,7 +20,37 @@ function bail(): never {
   process.exit(0);
 }
 
-/** Verify Feishu credentials by calling the bot info API */
+function buildSuggestedProfileName(provider: ProviderKind): string {
+  const existing = new Set(listProfiles().map((profile) => profile.name));
+  const base = provider === 'claude' ? 'claude-main' : 'codex-main';
+
+  if (!existing.has(base)) {
+    return base;
+  }
+
+  let suffix = 2;
+  while (existing.has(`${base}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${base}-${suffix}`;
+}
+
+function parseListInput(raw: string): string[] {
+  return raw
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function parseExtraArgs(raw: string): string[] | undefined {
+  const matches = raw.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  const args = matches
+    .map((part) => part.replace(/^"(.*)"$/, '$1').trim())
+    .filter(Boolean);
+
+  return args.length > 0 ? args : undefined;
+}
+
 async function probeLark(appId: string, appSecret: string): Promise<{ ok: boolean; name?: string; error?: string }> {
   try {
     const client = new lark.Client({ appId, appSecret });
@@ -34,11 +70,70 @@ async function probeLark(appId: string, appSecret: string): Promise<{ ok: boolea
   }
 }
 
-// ─── Lark onboarding ────────────────────────────────────────────────────────
+async function promptProvider(): Promise<ProviderKind> {
+  const value = await p.select({
+    message: '选择要接入的本机工具',
+    options: [
+      {
+        value: 'claude',
+        label: 'Claude Code',
+        hint: '支持流式卡片和飞书工具审批',
+      },
+      {
+        value: 'codex',
+        label: 'Codex',
+        hint: 'v1 不支持飞书远程审批，默认受限模式',
+      },
+    ],
+  });
+  if (isCancelled(value)) bail();
+  return value as ProviderKind;
+}
 
-async function onboardLark(): Promise<void> {
+async function promptProfileName(provider: ProviderKind): Promise<string> {
+  const suggestion = buildSuggestedProfileName(provider);
+  const existing = new Set(listProfiles().map((profile) => profile.name));
+
+  const value = await p.text({
+    message: 'Profile 名称',
+    placeholder: suggestion,
+    validate: (input) => {
+      const name = String(input ?? '').trim() || suggestion;
+      if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+        return '仅支持字母、数字、点、下划线和短横线';
+      }
+      if (existing.has(name)) {
+        return '该 profile 已存在，请换一个名字';
+      }
+      return undefined;
+    },
+  });
+  if (isCancelled(value)) bail();
+
+  return String(value ?? '').trim() || suggestion;
+}
+
+async function promptChannel(): Promise<ChannelKind> {
+  const value = await p.select({
+    message: '选择消息渠道',
+    options: [
+      {
+        value: 'lark',
+        label: '飞书（Lark）',
+        hint: 'v1 仅支持飞书 profile 创建',
+      },
+    ],
+  });
+  if (isCancelled(value)) bail();
+  return value as ChannelKind;
+}
+
+async function onboardLark(profileName: string): Promise<ProfileConfig['channel']> {
   p.note(
     [
+      `Profile：${pc.bold(profileName)}`,
+      `如果你要同时启动多个 profile，请为每个 profile 配置 ${pc.bold('独立的飞书应用 / Bot')}。`,
+      '',
       `1. 打开 ${pc.cyan('https://open.feishu.cn/app')}`,
       `2. 创建"企业自建应用"`,
       `3. 「添加应用能力」→ 选择 ${pc.bold('机器人')}`,
@@ -48,35 +143,37 @@ async function onboardLark(): Promise<void> {
     '飞书应用配置',
   );
 
-  // Collect credentials
   const appId = await p.text({
-    message: '完成后，填入 App ID',
+    message: 'App ID',
     placeholder: 'cli_xxxxxxxxxxxxxxxx',
-    validate: (v) => ((v ?? "").trim() ? undefined : '不能为空'),
+    validate: (value) => (String(value ?? '').trim() ? undefined : '不能为空'),
   });
   if (isCancelled(appId)) bail();
 
   const appSecret = await p.password({
     message: 'App Secret',
-    validate: (v) => ((v ?? "").trim() ? undefined : '不能为空'),
+    validate: (value) => (String(value ?? '').trim() ? undefined : '不能为空'),
   });
   if (isCancelled(appSecret)) bail();
 
-  // Verify credentials
   const spinner = p.spinner();
-  spinner.start('验证凭证...');
-  const probe = await probeLark(String(appId), String(appSecret));
+  spinner.start('验证飞书凭证...');
+  const probe = await probeLark(String(appId).trim(), String(appSecret).trim());
   if (probe.ok) {
-    spinner.stop(`${pc.green('✓')} 凭证验证通过${probe.name ? `，Bot 名称：${pc.bold(probe.name)}` : ''}`);
+    spinner.stop(
+      `${pc.green('✓')} 凭证验证通过${probe.name ? `，Bot 名称：${pc.bold(probe.name)}` : ''}`,
+    );
   } else {
     spinner.stop(`${pc.yellow('⚠')} 凭证验证失败：${probe.error}`);
-    const cont = await p.confirm({ message: '仍然继续保存配置？', initialValue: false });
+    const cont = await p.confirm({
+      message: '仍然继续保存这个飞书 profile 吗？',
+      initialValue: false,
+    });
     if (isCancelled(cont) || !cont) bail();
   }
 
-  // Allowlist
   const allowPolicy = await p.select({
-    message: '谁可以给 Bot 发消息？',
+    message: '谁可以给这个 Bot 发消息？',
     options: [
       { value: 'open', label: '所有人', hint: '任何人都可以' },
       { value: 'allowlist', label: '指定用户', hint: '只允许白名单用户' },
@@ -95,105 +192,150 @@ async function onboardLark(): Promise<void> {
     );
 
     const raw = await p.text({
-      message: '用户 open_id（多个用逗号分隔）',
+      message: '用户 open_id（多个用逗号或空格分隔）',
       placeholder: 'ou_xxxxx, ou_yyyyy',
-      validate: (v) => ((v ?? "").trim() ? undefined : '至少填一个'),
+      validate: (value) => (String(value ?? '').trim() ? undefined : '至少填一个'),
     });
     if (isCancelled(raw)) bail();
-
-    allowedUserIds = String(raw).split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    allowedUserIds = parseListInput(String(raw));
   }
 
-  // Save config
-  const cfg = getConfig();
-  cfg.channels = cfg.channels ?? {};
-  cfg.channels.lark = {
+  return {
+    type: 'lark',
     appId: String(appId).trim(),
     appSecret: String(appSecret).trim(),
     allowedUserIds,
   };
-  writeConfig(cfg);
 }
 
-// ─── Telegram onboarding ────────────────────────────────────────────────────
-
-async function onboardTelegram(): Promise<void> {
+async function promptRuntime(provider: ProviderKind): Promise<ProfileConfig['runtime']> {
   p.note(
-    [
-      `1. 打开 Telegram，搜索 ${pc.cyan('@BotFather')}`,
-      `2. 发送 ${pc.bold('/newbot')} 并按提示操作`,
-      `   - Bot 名称：例如 "My Claude"`,
-      `   - Bot 用户名：必须以 bot 结尾，例如 "my_claude_bot"`,
-      `3. 复制获得的 Token（格式：123456:ABC-DEF1234...）`,
-    ].join('\n'),
-    '创建 Telegram Bot',
+    provider === 'claude'
+      ? 'Claude profile 会继续复用流式输出、/sessions、/resume 和飞书权限审批。'
+      : 'Codex profile 当前不支持飞书远程审批，默认会改成自动执行模式（workspace-write + never）。'
+    ,
+    '运行时选项',
   );
 
-  const token = await p.password({
-    message: 'Bot Token',
-    validate: (v) => ((v ?? "").trim() ? undefined : '不能为空'),
+  const cwd = await p.text({
+    message: '默认工作目录（回车使用 ~）',
+    placeholder: '~/projects',
   });
-  if (isCancelled(token)) bail();
+  if (isCancelled(cwd)) bail();
 
-  p.note(
-    [
-      `获取 Chat ID：`,
-      `1. 打开你的 Bot，发送 /chatid`,
-      `2. Bot 会回复形如 ${pc.bold('tg:123456789')} 的 Chat ID`,
-      `3. 群组：先把 Bot 加入群组，再在群里发 /chatid`,
-    ].join('\n'),
-    '获取 Chat ID',
-  );
-
-  const chatIdRaw = await p.text({
-    message: '允许的 Chat ID（多个用逗号分隔）',
-    placeholder: 'tg:123456789, tg:-1001234567890',
-    validate: (v) => ((v ?? "").trim() ? undefined : '至少填一个'),
+  const timeout = await p.text({
+    message: '单次请求超时（毫秒，0 表示不超时）',
+    placeholder: '300000',
+    validate: (value) => {
+      const raw = String(value ?? '').trim();
+      if (!raw) return undefined;
+      const parsed = Number.parseInt(raw, 10);
+      return Number.isFinite(parsed) && parsed >= 0 ? undefined : '请输入大于等于 0 的整数';
+    },
   });
-  if (isCancelled(chatIdRaw)) bail();
+  if (isCancelled(timeout)) bail();
 
-  const allowedChatIds = String(chatIdRaw).split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+  const permissionTimeout = await p.text({
+    message: '工具审批超时（毫秒，0 表示一直等待）',
+    placeholder: '30000',
+    validate: (value) => {
+      const raw = String(value ?? '').trim();
+      if (!raw) return undefined;
+      const parsed = Number.parseInt(raw, 10);
+      return Number.isFinite(parsed) && parsed >= 0 ? undefined : '请输入大于等于 0 的整数';
+    },
+  });
+  if (isCancelled(permissionTimeout)) bail();
 
-  const cfg = getConfig();
-  cfg.channels = cfg.channels ?? {};
-  cfg.channels.telegram = {
-    botToken: String(token).trim(),
-    allowedChatIds,
+  const model = await p.text({
+    message: provider === 'claude' ? '默认 Claude 模型（可留空）' : '默认 Codex 模型（可留空）',
+    placeholder: provider === 'claude' ? 'claude-sonnet-4-6' : '使用 Codex 默认模型',
+  });
+  if (isCancelled(model)) bail();
+
+  const extraArgs = await p.text({
+    message: '额外 CLI 参数（可留空，按空格分隔）',
+    placeholder: '--append-system-prompt "Be concise"',
+  });
+  if (isCancelled(extraArgs)) bail();
+
+  const timeoutMs = Number.parseInt(String(timeout ?? '').trim(), 10);
+  const permissionTimeoutMs = Number.parseInt(String(permissionTimeout ?? '').trim(), 10);
+  return {
+    cwd: String(cwd ?? '').trim() || undefined,
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 300000,
+    permissionTimeoutMs: Number.isFinite(permissionTimeoutMs) && permissionTimeoutMs >= 0
+      ? permissionTimeoutMs
+      : 30000,
+    model: String(model ?? '').trim() || undefined,
+    extraArgs: parseExtraArgs(String(extraArgs ?? '').trim()),
   };
-  writeConfig(cfg);
-
-  p.note(
-    [
-      `配置已保存到 ${pc.cyan('~/.imcc/config.json')}`,
-      ``,
-      `运行 ${pc.cyan('imcc start')} 启动服务。`,
-    ].join('\n'),
-    '配置完成 🎉',
-  );
 }
 
-// ─── Entry ───────────────────────────────────────────────────────────────────
+async function promptCodexConfig(): Promise<{ sandboxMode: SandboxMode; approvalPolicy: ApprovalPolicy }> {
+  const mode = await p.select({
+    message: 'Codex 运行模式',
+    options: [
+      {
+        value: 'workspace-write',
+        label: '自动执行（推荐）',
+        hint: '工作区内自动执行，不再审批',
+      },
+      {
+        value: 'read-only',
+        label: '只读',
+        hint: '仅允许读取，不适合远程执行修改',
+      },
+      {
+        value: 'danger-full-access',
+        label: '全权限',
+        hint: '不再审批，也不做沙箱限制',
+      },
+    ],
+  });
+  if (isCancelled(mode)) bail();
 
-export async function runOnboarding(): Promise<void> {
+  return {
+    sandboxMode: mode as SandboxMode,
+    approvalPolicy: 'never',
+  };
+}
+
+export async function runOnboarding(): Promise<string> {
   p.intro(pc.bgCyan(pc.black(' imcc setup ')));
 
   console.log(
-    `\n  ${pc.bold('imcc')} 将你的本机 Claude Code 桥接到 IM 应用。\n`,
+    `\n  ${pc.bold('imcc')} 会把你的本机 Claude Code 或 Codex 桥接到飞书。\n`,
   );
 
-  const platform = await p.select({
-    message: '选择要接入的平台',
-    options: [
-      { value: 'lark', label: '飞书（Lark）', hint: '推荐，无需公网地址' },
-    ],
-  });
-  if (isCancelled(platform)) bail();
+  const provider = await promptProvider();
+  const profileName = await promptProfileName(provider);
+  const channel = await promptChannel();
 
-  if (platform === 'lark') {
-    await onboardLark();
-  } else {
-    await onboardTelegram();
+  if (channel !== 'lark') {
+    throw new Error(`Unsupported channel: ${channel}`);
   }
 
-  p.outro(`配置完成！运行 ${pc.cyan('imcc start')} 启动服务，服务启动后会提示如何开启飞书长连接。`);
+  const larkChannel = await onboardLark(profileName);
+  const runtime = await promptRuntime(provider);
+  const codex = provider === 'codex' ? await promptCodexConfig() : undefined;
+
+  const profile: ProfileConfig = {
+    name: profileName,
+    provider,
+    channel: larkChannel,
+    runtime,
+    codex,
+  };
+
+  saveProfile(profile);
+
+  p.outro(
+    [
+      `Profile ${pc.bold(profileName)} 已保存到 ${pc.cyan('~/.imcc/config.json')}`,
+      `启动命令：${pc.cyan(`imcc start --profile ${profileName}`)}`,
+    ].join('\n'),
+  );
+
+  return profileName;
 }
